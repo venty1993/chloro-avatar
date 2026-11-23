@@ -45,6 +45,20 @@
   <label>머리 움직임 <input id="headAmt" type="range" min="0" max="2" step="0.01"></label>
   <label>머리카락 찰랑임 <input id="hairAmt" type="range" min="0" max="2.5" step="0.01"></label>
   <label>입 벌어지는 정도 <input id="mouthAmt" type="range" min="0.5" max="4" step="0.01"></label>
+  <label>입 움직임
+    <select id="mouthSrc"><option value="cam">웹캠 (입 모양을 따라감)</option><option value="mic">마이크 (목소리 크기를 따라감)</option></select>
+  </label>
+  <div id="micBox">
+    <label>마이크
+      <select id="micSel"><option value="">(마이크를 고르면 찾음)</option></select>
+    </label>
+    <div style="position:relative;height:8px;background:#2a2a30;border-radius:4px;margin:6px 0 2px;overflow:hidden">
+      <div id="micBar" style="height:100%;width:0;background:#6c6"></div>
+      <div id="micGateMark" style="position:absolute;top:0;bottom:0;width:2px;background:#f66"></div>
+    </div>
+    <label>소음 문턱 (빨간 선보다 큰 소리에만 입이 열림) <input id="micGate" type="range" min="-70" max="-15" step="1"></label>
+    <label>마이크 감도 <input id="micAmt" type="range" min="0.4" max="3" step="0.01"></label>
+  </div>
   <label><input id="headset" type="checkbox"> 헤드셋 쓰기 (끄면 귀가 보이고 귀걸이가 귀에 달림)</label>
   <label><input id="mirror" type="checkbox"> 거울처럼 좌우 반전</label>
   <label><input id="showCam" type="checkbox"> 웹캠 화면 보기</label>
@@ -63,7 +77,8 @@ const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 
 // ---------------- 설정 ----------------
-const defaults = { pose: 'down', bg: '#0000ff', zoom: 1, headAmt: 1, hairAmt: 1, mouthAmt: 2.2, mirror: true, showCam: false, headset: true, camLabel: '' };
+const defaults = { pose: 'down', bg: '#0000ff', zoom: 1, headAmt: 1, hairAmt: 1, mouthAmt: 2.2, mirror: true, showCam: false, headset: true, camLabel: '',
+  mouthSrc: 'cam', micLabel: '', micGate: -45, micAmt: 1 };
 let cfg = { ...defaults };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('avatarCfg') || '{}')); } catch (e) {}
 if (params.get('pose')) { cfg.pose = params.get('pose'); cfg.headset = cfg.pose !== 'priest'; }
@@ -74,6 +89,10 @@ function bindUI() {
   for (const k of ['pose', 'bg']) { $(k).value = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.value; if (k === 'pose') poseChanged(); apply(); save(); }; }
   for (const k of ['zoom', 'headAmt', 'hairAmt', 'mouthAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; save(); }; }
   for (const k of ['mirror', 'showCam', 'headset']) { $(k).checked = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.checked; apply(); save(); }; }
+  for (const k of ['micGate', 'micAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; apply(); save(); }; }
+  $('mouthSrc').value = cfg.mouthSrc;
+  $('mouthSrc').onchange = e => { cfg.mouthSrc = e.target.value; apply(); save(); if (cfg.mouthSrc === 'mic') startMic(); else stopMic(); };
+  addEventListener('pointerdown', () => { if (mic.ctx && mic.ctx.state === 'suspended') mic.ctx.resume(); });
   $('calib').onclick = calibrate;
   $('hide').onclick = () => $('panel').classList.add('hidden');
   addEventListener('keydown', e => {
@@ -87,6 +106,54 @@ function poseChanged() { cfg.headset = cfg.pose !== 'priest'; $('headset').check
 function apply() {
   document.body.style.background = cfg.bg;
   $('cam').classList.toggle('show', cfg.showCam);
+  $('micBox').style.display = cfg.mouthSrc === 'mic' ? '' : 'none';
+  $('micGateMark').style.left = dbToBar(cfg.micGate) + '%';
+}
+
+// ---------------- 마이크 음량으로 입 움직이기 ----------------
+// 소리 크기(dB)가 문턱을 넘은 만큼 입이 열린다. 열릴 때는 바로, 닫힐 때는 조금 천천히.
+const mic = { ctx: null, an: null, buf: null, stream: null, env: 0, db: -100 };
+const dbToBar = db => Math.max(0, Math.min(100, (db + 70) / 70 * 100));
+function stopMic() {
+  if (mic.stream) mic.stream.getTracks().forEach(t => t.stop());
+  if (mic.ctx) mic.ctx.close();
+  mic.ctx = mic.an = mic.stream = null; mic.env = 0;
+}
+async function startMic(id) {
+  stopMic();
+  const ctx = new AudioContext(), an = ctx.createAnalyser();
+  an.fftSize = 1024; an.smoothingTimeConstant = 0;
+  if (params.has('mictest')) {                 // 확인용: 마이크 대신 커졌다 작아지는 소리를 넣는다
+    const osc = ctx.createOscillator(), g = ctx.createGain(), lfo = ctx.createOscillator(), lg = ctx.createGain();
+    g.gain.value = 0.1; lg.gain.value = 0.1; lfo.frequency.value = 1.5; lfo.connect(lg); lg.connect(g.gain);
+    osc.connect(g); g.connect(an); osc.start(); lfo.start();
+  } else {
+    const audio = { echoCancellation: false, noiseSuppression: true, autoGainControl: false };
+    if (id) audio.deviceId = { exact: id };
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio, video: false }); }
+    catch (e) { ctx.close(); statusEl.textContent = '마이크를 열 수 없습니다. 주소창의 마이크 권한을 허용해 주세요.'; return; }
+    mic.stream = stream; ctx.createMediaStreamSource(stream).connect(an);
+    const mics = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+    const sel = $('micSel'), now = stream.getAudioTracks()[0].getSettings().deviceId;
+    sel.innerHTML = '';
+    for (const m of mics) { const o = document.createElement('option'); o.value = m.deviceId; o.textContent = m.label || '마이크'; sel.appendChild(o); }
+    const saved = mics.find(m => m.label === cfg.micLabel);
+    if (!id && saved && saved.deviceId !== now) { ctx.close(); return startMic(saved.deviceId); }   // 지난번에 고른 마이크로
+    sel.value = now;
+    sel.onchange = () => { const m = mics.find(d => d.deviceId === sel.value); cfg.micLabel = m ? m.label : ''; save(); startMic(sel.value); };
+  }
+  mic.ctx = ctx; mic.an = an; mic.buf = new Float32Array(an.fftSize);
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+}
+function micMouth(dt) {
+  mic.an.getFloatTimeDomainData(mic.buf);
+  let sum = 0; for (let i = 0; i < mic.buf.length; i++) sum += mic.buf[i] * mic.buf[i];
+  mic.db = 10 * Math.log10(sum / mic.buf.length + 1e-10);
+  const open = Math.max(0, Math.min(1, (mic.db - cfg.micGate) / 22 * cfg.micAmt));
+  mic.env = open > mic.env ? open : Math.max(open, mic.env - dt * 7);
+  $('micBar').style.width = dbToBar(mic.db) + '%';
+  return mic.env;
 }
 
 // ---------------- WebGL ----------------
@@ -179,6 +246,7 @@ function step(dt, t) {
     const bl = (t % 3.4) < 0.13 ? 1 : 0; target.blinkL = target.blinkR = bl;
     target.mouth = DEMO ? Math.max(0, Math.sin(t * 6)) * (Math.sin(t * 0.8) > 0 ? 1 : 0) : 0;
   }
+  if (cfg.mouthSrc === 'mic' && mic.an) target.mouth = micMouth(dt);
   if (params.has('mouth')) target.mouth = +params.get('mouth');             // 확인용: 입 벌림을 고정
   const f = 1 - Math.exp(-dt * 16), fb = 1 - Math.exp(-dt * 34);
   for (const k of ['yaw', 'pitch', 'roll', 'tx', 'ty']) cur[k] += (target[k] - cur[k]) * f;
@@ -382,7 +450,7 @@ function onFace(pts, shapes) {
     // 화면 왼쪽 눈 = 거울 모드에선 내 왼쪽 눈
     const L = cfg.mirror ? s.eyeBlinkLeft : s.eyeBlinkRight, R = cfg.mirror ? s.eyeBlinkRight : s.eyeBlinkLeft;
     target.blinkL = L > 0.45 ? 1 : 0; target.blinkR = R > 0.45 ? 1 : 0;
-    target.mouth = cl(((s.jawOpen || 0) - 0.04) * cfg.mouthAmt, 0, 1);
+    if (cfg.mouthSrc !== 'mic') target.mouth = cl(((s.jawOpen || 0) - 0.04) * cfg.mouthAmt, 0, 1);
   }
 }
 
@@ -397,6 +465,8 @@ function onFace(pts, shapes) {
   gl.uniform4f(U('uMouthC'), P.mouth_c[0] / IW, P.mouth_c[1] / IH, P.mouth_c[2] / IW, P.mouth_c[3] / IH); gl.uniform1f(U('uMouthW'), P.mouth_c[4]);
   gl.uniform4fv(U('uEyesRect'), r(P.eyes)); gl.uniform4fv(U('uMouthRect'), r(P.mouth));
   requestAnimationFrame(frame);
+  if (params.has('mictest')) { cfg.mouthSrc = 'mic'; $('mouthSrc').value = 'mic'; apply(); }
+  if (cfg.mouthSrc === 'mic') startMic();
   if (DEMO) { statusEl.textContent = '시험 모드 (웹캠 없이 혼자 움직임)'; if (params.has('nopanel')) $('panel').classList.add('hidden'); }
   else startTracking();
 })();
