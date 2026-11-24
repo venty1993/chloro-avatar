@@ -50,6 +50,7 @@
     <div id="eyeBar" style="height:100%;width:0;background:#6c6"></div>
     <div id="eyeMark" style="position:absolute;top:0;bottom:0;width:2px;background:#f66"></div>
   </div>
+  <label><input id="eyeLink" type="checkbox"> 두 눈 같이 감기 (끄면 윙크도 따라함)</label>
   <label>입 움직임
     <select id="mouthSrc"><option value="cam">웹캠 (입 모양을 따라감)</option><option value="mic">마이크 (목소리 크기를 따라감)</option></select>
   </label>
@@ -83,7 +84,7 @@ const DEMO = params.has('demo');
 
 // ---------------- 설정 ----------------
 const defaults = { pose: 'down', bg: '#0000ff', zoom: 1, headAmt: 1, hairAmt: 1, mouthAmt: 2.2, mirror: true, showCam: false, headset: true, camLabel: '',
-  mouthSrc: 'cam', micLabel: '', micGate: -45, micAmt: 1, eyeSens: 0.55 };
+  mouthSrc: 'cam', micLabel: '', micGate: -45, micAmt: 1, eyeSens: 0.55, eyeLink: true };
 let cfg = { ...defaults };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('avatarCfg') || '{}')); } catch (e) {}
 if (params.get('pose')) { cfg.pose = params.get('pose'); cfg.headset = cfg.pose !== 'priest'; }
@@ -93,7 +94,7 @@ const statusEl = $('status');
 function bindUI() {
   for (const k of ['pose', 'bg']) { $(k).value = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.value; if (k === 'pose') poseChanged(); apply(); save(); }; }
   for (const k of ['zoom', 'headAmt', 'hairAmt', 'mouthAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; save(); }; }
-  for (const k of ['mirror', 'showCam', 'headset']) { $(k).checked = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.checked; apply(); save(); }; }
+  for (const k of ['mirror', 'showCam', 'headset', 'eyeLink']) { $(k).checked = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.checked; apply(); save(); }; }
   for (const k of ['micGate', 'micAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; apply(); save(); }; }
   const eyeMark = () => { $('eyeMark').style.left = ((1 - cfg.eyeSens) * 100) + '%'; };
   $('eyeSens').value = cfg.eyeSens; eyeMark();
@@ -459,8 +460,14 @@ function onFace(pts, shapes) {
     const L = cfg.mirror ? s.eyeBlinkLeft : s.eyeBlinkRight, R = cfg.mirror ? s.eyeBlinkRight : s.eyeBlinkLeft;
     // 민감도가 높을수록 문턱이 낮아져 조금만 감아도 감김 (기본 0.55 → 문턱 0.45, 예전과 같음)
     const th = 1 - cfg.eyeSens;
-    target.blinkL = L > th ? 1 : 0; target.blinkR = R > th ? 1 : 0;
-    const eb = $('eyeBar'); if (eb) eb.style.width = (Math.max(L || 0, R || 0) * 100) + '%';
+    if (cfg.eyeLink) {   // 두 눈 평균으로 한 번만 판단 → 한쪽만 감기는 윙크가 안 생김
+      const a = ((L || 0) + (R || 0)) / 2;
+      target.blinkL = target.blinkR = a > th ? 1 : 0;
+      const eb = $('eyeBar'); if (eb) eb.style.width = (a * 100) + '%';
+    } else {
+      target.blinkL = L > th ? 1 : 0; target.blinkR = R > th ? 1 : 0;
+      const eb = $('eyeBar'); if (eb) eb.style.width = (Math.max(L || 0, R || 0) * 100) + '%';
+    }
     if (cfg.mouthSrc !== 'mic') target.mouth = cl(((s.jawOpen || 0) - 0.04) * cfg.mouthAmt, 0, 1);
   }
 }
