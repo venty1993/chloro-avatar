@@ -45,6 +45,11 @@
   <label>머리 움직임 <input id="headAmt" type="range" min="0" max="2" step="0.01"></label>
   <label>머리카락 찰랑임 <input id="hairAmt" type="range" min="0" max="2.5" step="0.01"></label>
   <label>입 벌어지는 정도 <input id="mouthAmt" type="range" min="0.5" max="4" step="0.01"></label>
+  <label>눈 감김 민감도 (오른쪽일수록 조금만 감아도 감김) <input id="eyeSens" type="range" min="0.15" max="0.9" step="0.01"></label>
+  <div style="position:relative;height:8px;background:#2a2a30;border-radius:4px;margin:2px 0 6px;overflow:hidden" title="초록 막대 = 지금 눈 감은 정도, 빨간 선을 넘으면 감김">
+    <div id="eyeBar" style="height:100%;width:0;background:#6c6"></div>
+    <div id="eyeMark" style="position:absolute;top:0;bottom:0;width:2px;background:#f66"></div>
+  </div>
   <label>입 움직임
     <select id="mouthSrc"><option value="cam">웹캠 (입 모양을 따라감)</option><option value="mic">마이크 (목소리 크기를 따라감)</option></select>
   </label>
@@ -78,7 +83,7 @@ const DEMO = params.has('demo');
 
 // ---------------- 설정 ----------------
 const defaults = { pose: 'down', bg: '#0000ff', zoom: 1, headAmt: 1, hairAmt: 1, mouthAmt: 2.2, mirror: true, showCam: false, headset: true, camLabel: '',
-  mouthSrc: 'cam', micLabel: '', micGate: -45, micAmt: 1 };
+  mouthSrc: 'cam', micLabel: '', micGate: -45, micAmt: 1, eyeSens: 0.55 };
 let cfg = { ...defaults };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem('avatarCfg') || '{}')); } catch (e) {}
 if (params.get('pose')) { cfg.pose = params.get('pose'); cfg.headset = cfg.pose !== 'priest'; }
@@ -90,6 +95,9 @@ function bindUI() {
   for (const k of ['zoom', 'headAmt', 'hairAmt', 'mouthAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; save(); }; }
   for (const k of ['mirror', 'showCam', 'headset']) { $(k).checked = cfg[k]; $(k).onchange = e => { cfg[k] = e.target.checked; apply(); save(); }; }
   for (const k of ['micGate', 'micAmt']) { $(k).value = cfg[k]; $(k).oninput = e => { cfg[k] = +e.target.value; apply(); save(); }; }
+  const eyeMark = () => { $('eyeMark').style.left = ((1 - cfg.eyeSens) * 100) + '%'; };
+  $('eyeSens').value = cfg.eyeSens; eyeMark();
+  $('eyeSens').oninput = e => { cfg.eyeSens = +e.target.value; eyeMark(); save(); };
   $('mouthSrc').value = cfg.mouthSrc;
   $('mouthSrc').onchange = e => { cfg.mouthSrc = e.target.value; apply(); save(); if (cfg.mouthSrc === 'mic') startMic(); else stopMic(); };
   addEventListener('pointerdown', () => { if (mic.ctx && mic.ctx.state === 'suspended') mic.ctx.resume(); });
@@ -449,7 +457,10 @@ function onFace(pts, shapes) {
     const s = {}; for (const c of shapes.categories) s[c.categoryName] = c.score;
     // 화면 왼쪽 눈 = 거울 모드에선 내 왼쪽 눈
     const L = cfg.mirror ? s.eyeBlinkLeft : s.eyeBlinkRight, R = cfg.mirror ? s.eyeBlinkRight : s.eyeBlinkLeft;
-    target.blinkL = L > 0.45 ? 1 : 0; target.blinkR = R > 0.45 ? 1 : 0;
+    // 민감도가 높을수록 문턱이 낮아져 조금만 감아도 감김 (기본 0.55 → 문턱 0.45, 예전과 같음)
+    const th = 1 - cfg.eyeSens;
+    target.blinkL = L > th ? 1 : 0; target.blinkR = R > th ? 1 : 0;
+    const eb = $('eyeBar'); if (eb) eb.style.width = (Math.max(L || 0, R || 0) * 100) + '%';
     if (cfg.mouthSrc !== 'mic') target.mouth = cl(((s.jawOpen || 0) - 0.04) * cfg.mouthAmt, 0, 1);
   }
 }
